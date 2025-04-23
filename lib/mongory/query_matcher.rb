@@ -35,32 +35,27 @@ module Mongory
     #
     # @param condition [Hash<Symbol, Object>] a query condition using operator-style symbol keys,
     #   e.g. { :age.gt => 18 }, which will be parsed by `Mongory.condition_converter`.
-    def initialize(condition)
-      super(Mongory.condition_converter.convert(condition))
-    end
-
-    alias_method :super_match, :match
-
-    # Matches the given record against the condition.
-    # The record is first converted using Mongory.data_converter
-    # to ensure consistent data types during comparison.
-    #
-    # @param record [Object] the raw input record (e.g., Hash or model object) to be matched.
-    #   It will be converted internally using `Mongory.data_converter`.
-    # @return [Boolean] whether the record satisfies the condition
-    def match(record)
-      super_match(Mongory.data_converter.convert(record))
+    # @param context [Context] The query context containing configuration and current record
+    # @option context [Hash] :config The query configuration
+    # @option context [Object] :current_record The current record being processed
+    # @option context [Boolean] :need_convert Whether the record needs to be converted
+    def initialize(condition, context: Utils::Context.new)
+      super(Mongory.condition_converter.convert(condition), context: context)
     end
 
     # Returns a Proc that can be used for fast matching.
-    # The Proc handles errors gracefully by returning false
-    # if any error occurs during matching.
+    # The Proc converts the record using Mongory.data_converter
+    # and delegates to the superclass's raw_proc.
     #
-    # @return [Proc] a callable that takes a record and returns a boolean
+    # @return [Proc] A proc that performs query matching with context awareness
+    # @note The proc includes error handling and context-based record conversion
     def raw_proc
       super_proc = super
+      need_convert = @context.need_convert
+      data_converter = Mongory.data_converter
 
       Proc.new do |record|
+        record = data_converter.convert(record) if need_convert
         super_proc.call(record)
       rescue StandardError
         false

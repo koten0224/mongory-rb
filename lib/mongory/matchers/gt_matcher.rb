@@ -6,7 +6,7 @@ module Mongory
     #
     # It returns true if the record is strictly greater than the condition.
     #
-    # Inherits core logic from AbstractOperatorMatcher, including
+    # Inherits core logic from AbstractMatcher, including
     # error handling and optional preprocessing.
     #
     # @example
@@ -14,25 +14,20 @@ module Mongory
     #   matcher.match?(15)  #=> true
     #   matcher.match?(10)  #=> false
     #
-    # @see AbstractOperatorMatcher
+    # @see AbstractMatcher
     class GtMatcher < AbstractMatcher
-      # Checks if the record is greater than the condition.
-      #
-      # @param record [Object] the value to compare against
-      # @return [Boolean] true if the record is greater than the condition
-      def match(record)
-        record > @condition
-      end
-
       # Creates a raw Proc that performs the greater-than comparison.
       # The Proc uses the `>` operator to compare values.
       #
-      # @return [Proc] a Proc that performs the greater-than comparison
+      # @return [Proc] A proc that performs greater-than comparison with error handling
+      # @note The proc includes error handling for invalid comparisons
       def raw_proc
         condition = @condition
 
         Proc.new do |record|
           record > condition
+        rescue StandardError
+          false
         end
       end
     end

@@ -2,57 +2,34 @@
 
 module Mongory
   module Matchers
-    # LiteralMatcher is responsible for handling raw literal values in query conditions.
+    # LiteralMatcher handles direct value comparison with special array handling.
     #
-    # This matcher dispatches logic based on the type of the literal value,
-    # such as nil, Array, Regexp, Hash, etc., and delegates to the appropriate specialized matcher.
+    # This matcher is used when a condition is a literal value (not an operator).
+    # It handles both direct equality comparison and array-record scenarios.
     #
-    # It is used when the query condition is a direct literal and not an operator or nested query.
+    # For array records:
+    # - Uses ArrayRecordMatcher to check if any element matches
+    # For non-array records:
+    # - Uses appropriate matcher based on condition type (Hash, Regexp, nil, etc.)
     #
-    # @example Supported usages
-    #   { name: "Alice" }         # String literal
-    #   { age: 18 }               # Numeric literal
-    #   { active: true }          # Boolean literal
-    #   { tags: [1, 2, 3] }       # Array literal → ArrayRecordMatcher
-    #   { email: /@gmail\\.com/i } # Regexp literal → RegexMatcher
-    #   { info: nil }             # nil literal → nil_matcher (matches null or missing)
+    # @example Basic equality matching
+    #   matcher = LiteralMatcher.build(42)
+    #   matcher.match?(42)       #=> true
+    #   matcher.match?([42, 43]) #=> true (array contains 42)
     #
-    # @note This matcher is commonly dispatched from HashConditionMatcher or FieldMatcher
-    #       when the condition is a simple literal value, not an operator hash.
+    # @example Regexp matching
+    #   matcher = LiteralMatcher.build(/foo/)
+    #   matcher.match?("foo")     #=> true
+    #   matcher.match?(["foobar"]) #=> true
     #
-    # === Supported literal types:
-    # - String
-    # - Integer / Float
-    # - Symbol
-    # - TrueClass / FalseClass
-    # - NilClass → delegates to nil_matcher
-    # - Regexp → delegates to RegexMatcher
-    # - Array → delegates to ArrayRecordMatcher
-    # - Hash → delegates to HashConditionMatcher (if treated as sub-query)
-    # - Other unrecognized values → fallback to equality match (==)
+    # @example Hash condition matching
+    #   matcher = LiteralMatcher.build({ '$gt' => 10 })
+    #   matcher.match?(15)        #=> true
+    #   matcher.match?([5, 15])   #=> true
     #
-    # === Excluded types (handled by other matchers):
-    # - Operator hashes like `{ "$gt" => 5 }` → handled by OperatorMatcher
-    # - Nested paths like `"a.b.c"` → handled by FieldMatcher
-    # - Query combinators like `$or`, `$and`, `$not` → handled by corresponding matchers
-    #
-    # @see Mongory::Matchers::RegexMatcher
-    # @see Mongory::Matchers::OrMatcher
-    # @see Mongory::Matchers::ArrayRecordMatcher
-    # @see Mongory::Matchers::HashConditionMatcher
+    # @see AbstractMatcher
+    # @see ArrayRecordMatcher
     class LiteralMatcher < AbstractMatcher
-      # Matches the given record against the condition.
-      #
-      # @param record [Object] the record to be matched
-      # @return [Boolean] whether the record satisfies the condition
-      def match(record)
-        if record.is_a?(Array)
-          array_record_matcher.match?(record)
-        else
-          dispatched_matcher.match?(record)
-        end
-      end
-
       # Creates a raw Proc that performs the literal matching operation.
       # The Proc handles both array and non-array records appropriately.
       #
@@ -93,16 +70,16 @@ module Mongory
       define_matcher(:dispatched) do
         case @condition
         when Hash
-          HashConditionMatcher.build(@condition)
+          HashConditionMatcher.build(@condition, context: @context)
         when Regexp
-          RegexMatcher.build(@condition)
+          RegexMatcher.build(@condition, context: @context)
         when nil
           OrMatcher.build([
             { '$exists' => false },
             { '$eq' => nil }
-          ])
+          ], context: @context)
         else
-          EqMatcher.build(@condition)
+          EqMatcher.build(@condition, context: @context)
         end
       end
 
@@ -112,7 +89,7 @@ module Mongory
       # @return [ArrayRecordMatcher] the matcher used to match array-type records
       # @!method array_record_matcher
       define_matcher(:array_record) do
-        ArrayRecordMatcher.build(@condition)
+        ArrayRecordMatcher.build(@condition, context: @context)
       end
 
       # Validates the nested condition matcher, if applicable.

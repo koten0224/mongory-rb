@@ -5,6 +5,7 @@ module Mongory
     # AndMatcher implements the `$and` logical operator.
     #
     # It evaluates an array of subconditions and returns true only if *all* of them match.
+    # For empty conditions, it returns true (using TRUE_PROC), following MongoDB's behavior.
     #
     # Unlike other matchers, AndMatcher flattens the underlying matcher tree by
     # delegating each subcondition to a `HashConditionMatcher`, and further extracting
@@ -12,12 +13,16 @@ module Mongory
     #
     # This allows the matcher trace (`.explain`) to render as a flat list of independent conditions.
     #
-    # @example
+    # @example Basic usage
     #   matcher = AndMatcher.build([
     #     { age: { :$gte => 18 } },
     #     { name: /foo/ }
     #   ])
     #   matcher.match?(record) #=> true if both match
+    #
+    # @example Empty conditions
+    #   matcher = AndMatcher.build([])
+    #   matcher.match?(record) #=> true (uses TRUE_PROC)
     #
     # @see AbstractMultiMatcher
     class AndMatcher < AbstractMultiMatcher
@@ -25,27 +30,33 @@ module Mongory
       # Conversion is disabled to avoid double-processing.
       enable_unwrap!
 
-      # Performs the logical AND operation on all subconditions.
-      # Returns true only if all subconditions match the record.
-      #
-      # @param record [Object] the record to match against
-      # @return [Boolean] true if all subconditions match, false otherwise
-      def match(record)
-        matchers.all? do |matcher|
-          matcher.match(record)
-        end
-      end
-
       # Creates a raw Proc that performs the AND operation.
       # The Proc combines all subcondition Procs and returns true only if all match.
+      # For empty conditions, returns TRUE_PROC.
       #
       # @return [Proc] a Proc that performs the AND operation
       def raw_proc
-        matcher_procs = matchers.map(&:to_proc)
+        return TRUE_PROC if matchers.empty?
+
+        combine_procs(*matchers.map(&:to_proc))
+      end
+
+      # Recursively combines multiple matcher procs with AND logic.
+      # This method optimizes the combination of multiple matchers by building
+      # a balanced tree of AND operations.
+      #
+      # @param left [Proc] The left matcher proc to combine
+      # @param rest [Array<Proc>] The remaining matcher procs to combine
+      # @return [Proc] A new proc that combines all matchers with AND logic
+      # @example
+      #   combine_procs(proc1, proc2, proc3)
+      #   #=> proc { |record| proc1.call(record) && proc2.call(record) && proc3.call(record) }
+      def combine_procs(left, *rest)
+        return left if rest.empty?
+
+        right = combine_procs(*rest)
         Proc.new do |record|
-          matcher_procs.all? do |matcher_proc|
-            matcher_proc.call(record)
-          end
+          left.call(record) && right.call(record)
         end
       end
 
@@ -54,11 +65,11 @@ module Mongory
       # Each condition is passed to a HashConditionMatcher, then recursively flattened.
       # All matchers are then deduplicated using `uniq_key`.
       #
-      # @return [Array<AbstractMatcher>]
+      # @return [Array<AbstractMatcher>] A flattened, deduplicated list of matchers
       # @see AbstractMatcher#uniq_key
       define_instance_cache_method(:matchers) do
         @condition.flat_map do |condition|
-          HashConditionMatcher.new(condition).matchers
+          HashConditionMatcher.new(condition, context: @context).matchers
         end.uniq(&:uniq_key)
       end
 

@@ -30,8 +30,9 @@ module Mongory
     # Initializes a new query builder with the given record set.
     #
     # @param records [Enumerable] the collection to query against
-    def initialize(records)
+    def initialize(records, context: Utils::Context.new)
       @records = records
+      @context = context
       set_matcher
     end
 
@@ -46,6 +47,7 @@ module Mongory
 
       @matcher.prepare_query
       @records.each do |record|
+        @context.current_record = record
         yield record if @matcher.match?(record)
       end
     end
@@ -59,6 +61,7 @@ module Mongory
     def fast
       return to_enum(:fast) unless block_given?
 
+      @context.need_convert = false
       @matcher.prepare_query
       matcher_block = @matcher.to_proc
       @records.each do |record|
@@ -166,11 +169,24 @@ module Mongory
     # Returns the raw parsed condition for this query.
     #
     # @return [Hash] the raw compiled condition
-    def condition
+    def raw_condition
       @matcher.condition
     end
 
-    alias_method :selector, :condition
+    # Creates a new query builder with additional context configuration.
+    #
+    # @param addon_context [Hash] Additional context configuration to merge
+    # @return [QueryBuilder] A new query builder instance with merged context
+    # @note Creates a new query builder with the current matcher's condition and merged context
+    # @example
+    #   query.with_context(need_convert: false) #=> Returns a new query builder with conversion disabled
+    def with_context(addon_context = {})
+      dup_instance_exec do
+        @context = @context.dup
+        @context.config.merge!(addon_context)
+        set_matcher(@matcher.condition)
+      end
+    end
 
     # Prints the internal matcher tree structure for the current query.
     # Will output a human-readable visual tree of matchers.
@@ -202,7 +218,7 @@ module Mongory
     # @param condition [Hash] the condition to build the matcher from
     # @return [void]
     def set_matcher(condition = {})
-      @matcher = QueryMatcher.new(condition)
+      @matcher = QueryMatcher.new(condition, context: @context)
     end
 
     # @private

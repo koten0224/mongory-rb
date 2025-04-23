@@ -17,20 +17,12 @@ module Mongory
     #   matcher = ExistsMatcher.build(false)
     #   matcher.match?(KEY_NOT_FOUND)   #=> true
     #
-    # @see AbstractOperatorMatcher
+    # @see AbstractMatcher
     class ExistsMatcher < AbstractMatcher
-      # Converts the raw record value into a boolean indicating presence.
-      #
-      # @param record [Object] the value associated with the field
-      # @return [Boolean] true if the key exists, false otherwise
-      def match(record)
-        (record != KEY_NOT_FOUND) == @condition
-      end
-
       # Creates a raw Proc that performs the existence check.
       # The Proc checks if the record exists and compares it to the condition.
       #
-      # @return [Proc] a Proc that performs the existence check
+      # @return [Proc] A proc that performs existence check with error handling
       def raw_proc
         condition = @condition
 

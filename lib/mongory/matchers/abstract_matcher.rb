@@ -7,23 +7,49 @@ module Mongory
     # It defines a common interface (`#match?`) and provides shared behavior
     # such as condition storage, optional conversion handling, and debugging output.
     #
-    # Subclasses are expected to implement `#match(record)` to define their matching logic.
+    # Each matcher is responsible for evaluating a specific type of condition against
+    # a record value. The base class provides infrastructure for:
+    # - Condition validation
+    # - Value conversion
+    # - Debug output
+    # - Proc caching
     #
-    # This class also supports caching of lazily-built matchers via `define_matcher`.
+    # @abstract Subclasses must implement {#match} to define their matching logic
     #
-    # @abstract
+    # @example Basic matcher implementation
+    #   class MyMatcher < AbstractMatcher
+    #     def match(record)
+    #       record == @condition
+    #     end
+    #   end
+    #
+    # @example Using a matcher
+    #   matcher = MyMatcher.build(42)
+    #   matcher.match?(42)  #=> true
+    #   matcher.match?(43)  #=> false
+    #
+    # @see Mongory::Matchers for the full list of available matchers
     class AbstractMatcher
       include Utils
 
       singleton_class.alias_method :build, :new
+
       # Sentinel value used to represent missing keys when traversing nested hashes.
+      # This is used instead of nil to distinguish between missing keys and nil values.
+      #
+      # @api private
       KEY_NOT_FOUND = SingletonBuilder.new('KEY_NOT_FOUND')
 
       # Defines a lazily-evaluated matcher accessor with instance-level caching.
+      # This is used to create cached accessors for submatcher instances.
       #
       # @param name [Symbol] the name of the matcher (e.g., :collection)
       # @yield the block that constructs the matcher instance
       # @return [void]
+      # @example
+      #   define_matcher(:array_matcher) do
+      #     ArrayMatcher.build(@condition)
+      #   end
       def self.define_matcher(name, &block)
         define_instance_cache_method(:"#{name}_matcher", &block)
       end
@@ -31,7 +57,13 @@ module Mongory
       # @return [Object] the raw condition this matcher was initialized with
       attr_reader :condition
 
-      # @return [String] a unique key representing this matcher instance, used for deduplication
+      # @return [Context] the query context containing configuration and current record
+      attr_reader :context
+
+      # Returns a unique key representing this matcher instance.
+      # Used for deduplication in multi-matchers.
+      #
+      # @return [String] a unique key for this matcher instance
       # @see AbstractMultiMatcher#matchers
       def uniq_key
         "#{self.class}:condition:#{@condition.class}:#{@condition}"
@@ -40,25 +72,21 @@ module Mongory
       # Initializes the matcher with a raw condition.
       #
       # @param condition [Object] the condition to match against
-      def initialize(condition)
+      # @param context [Context] the query context containing configuration
+      def initialize(condition, context: Context.new)
         @condition = condition
+        @context = context
 
         check_validity!
       end
 
-      # Performs the actual match logic.
-      # Subclasses must override this method.
-      #
-      # @param record [Object] the input record to test
-      # @return [Boolean] whether the record matches the condition
-      def match(record); end
-
       # Matches the given record against the condition.
+      # This method handles error cases and uses the cached proc for performance.
       #
       # @param record [Object] the input record
-      # @return [Boolean]
+      # @return [Boolean] whether the record matches the condition
       def match?(record)
-        match(record)
+        to_proc.call(record)
       rescue StandardError
         false
       end
@@ -67,8 +95,35 @@ module Mongory
       # The Proc is cached for better performance.
       #
       # @return [Proc] a Proc that can be used to match records
-      def to_proc
-        @to_proc ||= raw_proc
+      def cached_proc
+        @cached_proc ||= raw_proc
+      end
+
+      alias_method :to_proc, :cached_proc
+
+      # Creates a debug-enabled version of the matcher proc.
+      # This version includes tracing and error handling.
+      #
+      # @return [Proc] a debug-enabled version of the matcher proc
+      def debug_proc
+        return @debug_proc if defined?(@debug_proc)
+
+        raw_proc = raw_proc()
+        @debug_proc = Proc.new do |record|
+          result = nil
+
+          Debugger.instance.with_indent do
+            result = begin
+              raw_proc.call(record)
+            rescue StandardError => e
+              e
+            end
+
+            debug_display(record, result)
+          end
+
+          result.is_a?(Exception) ? false : result
+        end
       end
 
       # Creates a raw Proc from the match method.
@@ -80,33 +135,19 @@ module Mongory
         method(:match).to_proc
       end
 
-      # Provides an alias to `#match?` for internal delegation.
-      alias_method :regular_match, :match?
-
-      # Evaluates the match with debugging output.
-      # Increments indent level and prints visual result with colors.
+      # Performs the actual match logic.
+      # Subclasses must override this method.
       #
+      # @abstract
       # @param record [Object] the input record to test
-      # @return [Boolean] whether the match succeeded
-      def debug_match(record)
-        result = nil
-
-        Debugger.instance.with_indent do
-          result = begin
-            match(record)
-          rescue StandardError => e
-            e
-          end
-
-          debug_display(record, result)
-        end
-
-        result.is_a?(Exception) ? false : result
-      end
+      # @return [Boolean] whether the record matches the condition
+      def match(record); end
 
       # Validates the condition (no-op by default).
       # Override in subclasses to raise error if invalid.
       #
+      # @abstract
+      # @raise [TypeError] if the condition is invalid
       # @return [void]
       def check_validity!; end
 
@@ -125,7 +166,7 @@ module Mongory
       # Returns a single-line string representing this matcher in the tree output.
       # Format: `<MatcherType>: <condition.inspect>`
       #
-      # @return [String]
+      # @return [String] a formatted title for tree display
       def tree_title
         matcher_name = self.class.name.split('::').last.sub('Matcher', '')
         "#{matcher_name}: #{@condition.inspect}"
@@ -148,7 +189,7 @@ module Mongory
       # Uses ANSI escape codes to highlight matched vs. mismatched records.
       #
       # @param record [Object] the record being tested
-      # @param result [Boolean] whether the match succeeded
+      # @param result [Boolean, Exception] whether the match succeeded or an error occurred
       # @return [String] the formatted output string
       def debug_display(record, result)
         "#{self.class.name.split('::').last} #{colored_result(result)}, " \
@@ -158,7 +199,7 @@ module Mongory
 
       # Formats the match result with ANSI color codes for terminal output.
       #
-      # @param result [Boolean, Exception] the match result
+      # @param result [Boolean, Exception] the match result or error
       # @return [String] the colored result string
       def colored_result(result)
         if result.is_a?(Exception)
